@@ -493,7 +493,18 @@ async def kg_query(
     hashing_kv: BaseKVStorage = None,
 ) -> str:
     # Handle cache
-    use_model_func = global_config["llm_model_func"]
+    base_model_func = global_config["llm_model_func"]
+    llm_model_name = global_config.get("llm_model_name", "gpt-oss:20b")
+
+    # Wrapper to pass hashing_kv and model name to the LLM function
+    async def use_model_func(prompt, **kwargs):
+        return await base_model_func(
+            prompt,
+            hashing_kv=hashing_kv,
+            llm_model_name=llm_model_name,
+            **kwargs
+        )
+
     args_hash = compute_args_hash(query_param.mode, query)
     cached_response, quantized, min_val, max_val = await handle_cache(
         hashing_kv, args_hash, query, query_param.mode
