@@ -542,23 +542,61 @@ async def kg_query(
 
     logger.info("kw_prompt result:")
     print(final_result)
+
+    # Remove thinking tags from Qwen3/other models
+    clean_result = re.sub(r'<think>.*?</think>', '', final_result, flags=re.DOTALL)
+
     hl_keywords, ll_keywords = [], []
     try:
+        # Try standard parsing first
         records = split_string_by_multi_markers(
-            final_result,
+            clean_result,
             [context_base["record_delimiter"], context_base["completion_delimiter"]],
         )
+
+        # If no records found with standard delimiters, try newline/parenthesis splitting
+        if not records or len(records) <= 1:
+            # Find all tuples with parentheses pattern
+            records = re.findall(r'\([^)]+\)', clean_result)
+
         for record in records:
-            record = re.search(r"\((.*)\)", record)
-            if record is None:
+            # Extract content inside parentheses
+            match = re.search(r"\((.*)\)", record)
+            if match is None:
                 continue
-            record = record.group(1)
+            record_content = match.group(1)
+
+            # Try standard tuple delimiter first
             record_attributes = split_string_by_multi_markers(
-                record, [context_base["tuple_delimiter"]]
+                record_content, [context_base["tuple_delimiter"]]
             )
-            if len(record_attributes) == 3 and record_attributes[0] == '"hyper-relation"':
+
+            # If only 1 attribute, try comma-separated (Qwen3 format)
+            if len(record_attributes) <= 1:
+                # Parse as comma-separated, respecting quoted strings
+                record_attributes = []
+                current = ""
+                in_quotes = False
+                for char in record_content:
+                    if char == '"' and (not current or current[-1] != '\\'):
+                        in_quotes = not in_quotes
+                        current += char
+                    elif char == ',' and not in_quotes:
+                        record_attributes.append(current.strip())
+                        current = ""
+                    else:
+                        current += char
+                if current.strip():
+                    record_attributes.append(current.strip())
+
+            # Normalize first attribute for comparison
+            first_attr = record_attributes[0].strip().strip('"\'').lower() if record_attributes else ""
+
+            # hyper-relation: accept 2-3 attributes
+            if first_attr == "hyper-relation" and len(record_attributes) >= 2:
                 hl_keywords.append("<hyperedge>"+clean_str(record_attributes[1]))
-            elif len(record_attributes) == 5 and record_attributes[0] == '"entity"':
+            # entity: accept 4-5 attributes
+            elif first_attr == "entity" and len(record_attributes) >= 2:
                 ll_keywords.append(clean_str(record_attributes[1]).upper())
             else:
                 continue
