@@ -29,6 +29,7 @@ from .base import (
     TextChunkSchema,
     QueryParam,
 )
+from .rerank import contextual_rerank  # Contextual.ai reranker
 from .prompt import GRAPH_FIELD_SEP, PROMPTS
 
 
@@ -777,10 +778,24 @@ async def _get_node_data(
     text_chunks_db: BaseKVStorage[TextChunkSchema],
     query_param: QueryParam,
 ):
-    # get similar entities
-    results = await entities_vdb.query(query, top_k=query_param.top_k)
+    # get similar entities (fetch extra for reranking)
+    rerank_multiplier = 2  # Fetch 2x candidates for reranking
+    results = await entities_vdb.query(query, top_k=query_param.top_k * rerank_multiplier)
     if not len(results):
         return "", "", ""
+
+    # === RERANKING CON CONTEXTUAL.AI ===
+    if len(results) > 1:
+        query_text = query[0] if isinstance(query, list) else str(query)
+        results = await contextual_rerank(
+            query=query_text,
+            candidates=results,
+            content_key="entity_name",
+            instruction="Prioriza entidades directamente relacionadas con la pregunta",
+            top_k=query_param.top_k
+        )
+    # === FIN RERANKING ===
+
     # get entity information
     node_datas = await asyncio.gather(
         *[knowledge_graph_inst.get_node(r["entity_name"]) for r in results]
@@ -973,10 +988,24 @@ async def _get_edge_data(
     text_chunks_db: BaseKVStorage[TextChunkSchema],
     query_param: QueryParam,
 ):
-    results = await hyperedges_vdb.query(keywords, top_k=query_param.top_k)
+    # Fetch extra candidates for reranking
+    rerank_multiplier = 2
+    results = await hyperedges_vdb.query(keywords, top_k=query_param.top_k * rerank_multiplier)
 
     if not len(results):
         return "", "", ""
+
+    # === RERANKING CON CONTEXTUAL.AI ===
+    if len(results) > 1:
+        query_text = keywords[0] if isinstance(keywords, list) else str(keywords)
+        results = await contextual_rerank(
+            query=query_text,
+            candidates=results,
+            content_key="hyperedge_name",
+            instruction="Prioriza relaciones n-arias relevantes para la pregunta",
+            top_k=query_param.top_k
+        )
+    # === FIN RERANKING ===
 
     edge_datas = await asyncio.gather(
         *[knowledge_graph_inst.get_node(r["hyperedge_name"]) for r in results]
